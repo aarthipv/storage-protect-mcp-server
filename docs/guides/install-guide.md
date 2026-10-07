@@ -37,6 +37,135 @@ This guide covers the topology-specific installation steps for the IBM Storage P
 
 ---
 
+## Part 0 — Pre-Installation Checks
+
+Before creating any users or installing packages, confirm that `dsmadmc` is reachable and the SP server TLS certificate is trusted from the host where the MCP server process will run. Skipping these checks is the most common source of `ANS1592E Failed to initialize SSL protocol` errors later.
+
+### Step 0.1 — Identify your host type
+
+Answer this question first:
+
+> **Is the host where you will install the MCP server the same machine as the IBM SP server?**
+
+| Answer | Topology | `dsmadmc` situation |
+|---|---|---|
+| **Yes** — same machine | Topology A (co-located) | `dsmadmc` is already installed; cert is already on-host |
+| **No** — separate machine | Topology B (centralised) | You must install the IBM SP admin client package and register the cert separately |
+
+---
+
+### Step 0.2 — Confirm `dsmadmc` is available
+
+Run this as the OS user you will install under (or as root):
+
+```bash
+which dsmadmc
+dsmadmc -help 2>&1 | head -3
+```
+
+**Expected:** path printed (e.g. `/usr/bin/dsmadmc`) and version line shown.
+
+**If `dsmadmc` is not found:**
+- **Topology A (co-located):** The SP server installation includes `dsmadmc`. Check `/opt/tivoli/tsm/client/ba/bin/dsmadmc` and ensure it is in `PATH`, or add it:
+  ```bash
+  export PATH=$PATH:/opt/tivoli/tsm/client/ba/bin
+  ```
+- **Topology B (separate host):** Install the IBM Storage Protect administrative client package from IBM Passport Advantage / Fix Central (search for *IBM Storage Protect Client — Administrative Client*). Do not proceed until `dsmadmc` is available.
+
+---
+
+### Step 0.3 — Confirm the SP server TLS certificate is trusted
+
+`dsmadmc` uses TLS for all connections. The SP server's self-signed certificate must be registered in the client keystore **on the host running the MCP server process** before any connection attempt — otherwise you will get `ANS1592E Failed to initialize SSL protocol` regardless of credentials or `dsm.sys` content.
+
+#### Topology A — co-located (MCP process on the SP server host)
+
+The certificate files are already present in the SP instance user's home directory. Use IBM's `dsmcert` tool to register the cert into the system-wide client keystore, then make it readable by `mcp-runner`:
+
+```bash
+# Run as root on the SP server host
+# Replace tsminst1 and the cert256.arm path with your SP instance user and cert location
+/opt/tivoli/tsm/client/ba/bin/dsmcert -add \
+  -server <SERVERNAME-from-dsm.sys> \
+  -file /home/tsminst1/cert256.arm
+
+# Make the system cert.kdb readable by mcp-runner (and any non-root user running dsmadmc)
+chmod 644 /opt/tivoli/tsm/client/ba/bin/cert.kdb
+chmod 644 /opt/tivoli/tsm/client/ba/bin/cert.sth
+```
+
+> **Why `dsmcert` and not `gsk8capicmd_64`?** IBM's `dsmcert` tool registers the certificate in the format that `dsmadmc` trusts. Raw GSKit imports with `gsk8capicmd_64` produce a keystore that `dsmadmc` cannot use, resulting in `ANS1592E` even when the certificate appears to be present and trusted.
+
+> **Why `chmod 644`?** The system `cert.kdb` is created with mode `600` owned by the SP instance user. The `mcp-runner` account (a separate non-root user) cannot read it until permissions are relaxed. `644` allows all local users to read the public certificate — this is safe since keystores contain only public certificates, not private keys.
+
+Verify the cert is registered:
+
+```bash
+/usr/local/ibm/gsk8_64/bin/gsk8capicmd_64 -cert -list all \
+  -db /opt/tivoli/tsm/client/ba/bin/cert.kdb -stashed
+```
+
+Expected output includes `! "TSM Server SelfSigned SHA Key"` (the `!` flag means trusted).
+
+Test `dsmadmc` connectivity as `mcp-runner` after the OS user is created (Part 1):
+
+```bash
+su - mcp-runner -c "dsmadmc -id=<admin-id> -pa=<password> -se=<SERVERNAME> 'QUERY STATUS'"
+```
+
+Expected: `Session established with server <name>`.
+
+#### Topology B — separate control host
+
+On the control host you must:
+
+1. Obtain the SP server's certificate file (`cert256.arm`) — copy it from the SP server host or export it using `gsk8capicmd_64` on the SP server.
+2. Run `dsmcert -add` on the control host to register it.
+3. Apply `chmod 644` on the control host's `cert.kdb` / `cert.sth`.
+
+```bash
+# On the SP server host — export the cert
+/usr/local/ibm/gsk8_64/bin/gsk8capicmd_64 -cert -extract \
+  -db /home/tsminst1/cert.kdb -stashed \
+  -label "TSM Server SelfSigned SHA Key" \
+  -target /tmp/sp_server.arm -format ascii
+
+# Copy the cert to the control host
+scp /tmp/sp_server.arm mcp-runner@control-host:/tmp/sp_server.arm
+
+# On the control host — register it (as root)
+/opt/tivoli/tsm/client/ba/bin/dsmcert -add \
+  -server <SERVERNAME-from-dsm.sys> \
+  -file /tmp/sp_server.arm
+
+chmod 644 /opt/tivoli/tsm/client/ba/bin/cert.kdb
+chmod 644 /opt/tivoli/tsm/client/ba/bin/cert.sth
+```
+
+---
+
+### Step 0.4 — Confirm `LD_LIBRARY_PATH` includes GSKit
+
+On some RHEL/Rocky systems the GSKit SSL libraries are not in the default linker path. If `dsmadmc` fails with SSL errors despite the certificate being registered, add this to the `mcp-runner` shell profile and to the `.env` file:
+
+```bash
+# Check what the SP instance user has set
+su - tsminst1 -c "echo \$LD_LIBRARY_PATH"
+
+# Add the same paths for mcp-runner — edit /opt/sp-mcp-server/.bash_profile
+export LD_LIBRARY_PATH=/usr/local/ibm/gsk8_64/lib64:/opt/ibm/lib:/opt/ibm/lib64
+```
+
+Also add it to `.env` so it is inherited by the MCP server process:
+
+```dotenv
+LD_LIBRARY_PATH=/usr/local/ibm/gsk8_64/lib64:/opt/ibm/lib:/opt/ibm/lib64
+```
+
+> If the SP instance user's `LD_LIBRARY_PATH` also includes DB2 sqllib paths (e.g. `/home/tsminst1/sqllib/lib64/icc`), include those as well — they contain ICC crypto libraries that `dsmadmc` requires for TLS on DB2-backed SP installations.
+
+---
+
 ## Part 1 — OS User Setup
 
 ### Topology A — Co-located
@@ -300,7 +429,7 @@ The MCP server startup check (NET-1) validates that every configured service acc
 
 ```
 REGISTER ADMIN mcp-svc-readonly PASSWORD=<strong-password>
-UPDATE ADMIN mcp-svc-readonly SESSIONSECURITY=STRICT MFAREQUIRED=NO PASSWORDEXPIRATION=30
+UPDATE ADMIN mcp-svc-readonly SESSIONSECURITY=STRICT MFAREQUIRED=NO PASSEXP=30
 ```
 
 ### Full least-privilege setup (recommended for production)
@@ -310,31 +439,31 @@ Run these commands as a System-privileged IBM SP administrator on **each SP serv
 ```
 * Read-only account (QUERY tools only)
 REGISTER ADMIN mcp-svc-readonly PASSWORD=<strong-password>
-UPDATE ADMIN mcp-svc-readonly SESSIONSECURITY=STRICT MFAREQUIRED=NO PASSWORDEXPIRATION=30
+UPDATE ADMIN mcp-svc-readonly SESSIONSECURITY=STRICT MFAREQUIRED=NO PASSEXP=30
 UPDATE ADMIN mcp-svc-readonly CONTACT="MCP Server | host:<this-sp-host> | role:readonly"
 
 * Operator account
 REGISTER ADMIN mcp-svc-operator PASSWORD=<strong-password>
 GRANT AUTHORITY mcp-svc-operator CLASSES=OPERATOR
-UPDATE ADMIN mcp-svc-operator SESSIONSECURITY=STRICT MFAREQUIRED=NO PASSWORDEXPIRATION=30
+UPDATE ADMIN mcp-svc-operator SESSIONSECURITY=STRICT MFAREQUIRED=NO PASSEXP=30
 UPDATE ADMIN mcp-svc-operator CONTACT="MCP Server | host:<this-sp-host> | role:operator"
 
 * Storage account
 REGISTER ADMIN mcp-svc-storage PASSWORD=<strong-password>
 GRANT AUTHORITY mcp-svc-storage CLASSES=STORAGE
-UPDATE ADMIN mcp-svc-storage SESSIONSECURITY=STRICT MFAREQUIRED=NO PASSWORDEXPIRATION=30
+UPDATE ADMIN mcp-svc-storage SESSIONSECURITY=STRICT MFAREQUIRED=NO PASSEXP=30
 UPDATE ADMIN mcp-svc-storage CONTACT="MCP Server | host:<this-sp-host> | role:storage"
 
 * Policy account
 REGISTER ADMIN mcp-svc-policy PASSWORD=<strong-password>
 GRANT AUTHORITY mcp-svc-policy CLASSES=POLICY
-UPDATE ADMIN mcp-svc-policy SESSIONSECURITY=STRICT MFAREQUIRED=NO PASSWORDEXPIRATION=30
+UPDATE ADMIN mcp-svc-policy SESSIONSECURITY=STRICT MFAREQUIRED=NO PASSEXP=30
 UPDATE ADMIN mcp-svc-policy CONTACT="MCP Server | host:<this-sp-host> | role:policy"
 
 * System account (broadest privilege — also designated as command approver)
 REGISTER ADMIN mcp-svc-system PASSWORD=<strong-password>
 GRANT AUTHORITY mcp-svc-system CLASSES=SYSTEM
-UPDATE ADMIN mcp-svc-system SESSIONSECURITY=STRICT MFAREQUIRED=NO PASSWORDEXPIRATION=30 CMDAPPROVER=YES
+UPDATE ADMIN mcp-svc-system SESSIONSECURITY=STRICT MFAREQUIRED=NO PASSEXP=30 CMDAPPROVER=YES
 UPDATE ADMIN mcp-svc-system CONTACT="MCP Server | host:<this-sp-host> | role:system"
 ```
 
