@@ -8,26 +8,31 @@ This guide covers the topology-specific installation steps for the IBM Storage P
 
 ## Table of Contents
 
-- [Part 1 — OS User Setup](#part-1--os-user-setup)
+- [Part 1 — Pre-Installation Checks](#part-1--pre-installation-checks)
+  - [Step 1.1 — Identify your host type](#step-11--identify-your-host-type)
+  - [Step 1.2 — Confirm `dsmadmc` is available](#step-12--confirm-dsmadmc-is-available)
+  - [Step 1.3 — Confirm the SP server TLS certificate is trusted](#step-13--confirm-the-sp-server-tls-certificate-is-trusted)
+  - [Step 1.4 — Confirm `LD_LIBRARY_PATH` includes GSKit](#step-14--confirm-ld_library_path-includes-gskit)
+- [Part 2 — OS User Setup](#part-2--os-user-setup)
   - [Topology A — Co-located](#topology-a--co-located)
   - [Topology B — Centralised](#topology-b--centralised)
-- [Part 2 — Python Environment](#part-2--python-environment)
-- [Part 3 — Install the Package](#part-3--install-the-package)
-- [Part 4 — `.env` Configuration File](#part-4---env-configuration-file)
+- [Part 3 — Python Environment](#part-3--python-environment)
+- [Part 4 — Install the Package](#part-4--install-the-package)
+- [Part 5 — `.env` Configuration File](#part-5---env-configuration-file)
   - [Topology A — one `.env` per SP server host](#topology-a--one-env-per-sp-server-host)
   - [Topology B — one `.env` per SP server subdirectory, on the control host](#topology-b--one-env-per-sp-server-subdirectory-on-the-control-host)
   - [Minimum `.env` for a single read-only service account](#minimum-env-for-a-single-read-only-service-account)
   - [Full `.env` — per-privilege service accounts (recommended for production)](#full-env--per-privilege-service-accounts-recommended-for-production)
   - [Complete environment variable reference](#complete-environment-variable-reference)
-- [Part 5 — IBM SP Service Account Provisioning](#part-5--ibm-sp-service-account-provisioning)
+- [Part 6 — IBM SP Service Account Provisioning](#part-6--ibm-sp-service-account-provisioning)
   - [Minimum setup (single read-only account)](#minimum-setup-single-read-only-account)
   - [Full least-privilege setup (recommended for production)](#full-least-privilege-setup-recommended-for-production)
-- [Part 6 — `dsm.sys` TLS Configuration (NET-3)](#part-6--dsmsys-tls-configuration-net-3)
+- [Part 7 — `dsm.sys` TLS Configuration (NET-3)](#part-7--dsmsys-tls-configuration-net-3)
   - [Topology A — one `dsm.sys` per SP server host](#topology-a--one-dsmsys-per-sp-server-host)
   - [Topology B — one `dsm.sys` on the control host, one stanza per SP server](#topology-b--one-dsmsys-on-the-control-host-one-stanza-per-sp-server)
   - [Populate the password stash (one-time per account, per SP server)](#populate-the-password-stash-one-time-per-account-per-sp-server)
-- [Part 7 — sudoers Rule for Offline Commands (Topology A only)](#part-7--sudoers-rule-for-offline-commands-topology-a-only)
-- [Part 8 — Verify the Installation](#part-8--verify-the-installation)
+- [Part 8 — sudoers Rule for Offline Commands (Topology A only)](#part-8--sudoers-rule-for-offline-commands-topology-a-only)
+- [Part 9 — Verify the Installation](#part-9--verify-the-installation)
   - [Topology A — on each SP server host](#topology-a--on-each-sp-server-host)
   - [Topology B — on the control host, once per SP server subdirectory](#topology-b--on-the-control-host-once-per-sp-server-subdirectory)
 - [Post-Install Checklist](#post-install-checklist)
@@ -37,11 +42,11 @@ This guide covers the topology-specific installation steps for the IBM Storage P
 
 ---
 
-## Part 0 — Pre-Installation Checks
+## Part 1 — Pre-Installation Checks
 
 Before creating any users or installing packages, confirm that `dsmadmc` is reachable and the SP server TLS certificate is trusted from the host where the MCP server process will run. Skipping these checks is the most common source of `ANS1592E Failed to initialize SSL protocol` errors later.
 
-### Step 0.1 — Identify your host type
+### Step 1.1 — Identify your host type
 
 Answer this question first:
 
@@ -54,7 +59,7 @@ Answer this question first:
 
 ---
 
-### Step 0.2 — Confirm `dsmadmc` is available
+### Step 1.2 — Confirm `dsmadmc` is available
 
 Run this as the OS user you will install under (or as root):
 
@@ -74,7 +79,7 @@ dsmadmc -help 2>&1 | head -3
 
 ---
 
-### Step 0.3 — Confirm the SP server TLS certificate is trusted
+### Step 1.3 — Confirm the SP server TLS certificate is trusted
 
 `dsmadmc` uses TLS for all connections. The SP server's self-signed certificate must be registered in the client keystore **on the host running the MCP server process** before any connection attempt — otherwise you will get `ANS1592E Failed to initialize SSL protocol` regardless of credentials or `dsm.sys` content.
 
@@ -144,7 +149,7 @@ chmod 644 /opt/tivoli/tsm/client/ba/bin/cert.sth
 
 ---
 
-### Step 0.4 — Confirm `LD_LIBRARY_PATH` includes GSKit
+### Step 1.4 — Confirm `LD_LIBRARY_PATH` includes GSKit
 
 On some RHEL/Rocky systems the GSKit SSL libraries are not in the default linker path. If `dsmadmc` fails with SSL errors despite the certificate being registered, add this to the `mcp-runner` shell profile and to the `.env` file:
 
@@ -166,7 +171,7 @@ LD_LIBRARY_PATH=/usr/local/ibm/gsk8_64/lib64:/opt/ibm/lib:/opt/ibm/lib64
 
 ---
 
-## Part 1 — OS User Setup
+## Part 2 — OS User Setup
 
 ### Topology A — Co-located
 
@@ -200,7 +205,7 @@ chown -R mcp-runner:mcp-runner /opt/sp-mcp
 
 ---
 
-## Part 2 — Python Environment
+## Part 3 — Python Environment
 
 ### Linux (RHEL / Rocky / CentOS)
 
@@ -240,7 +245,7 @@ pip install --upgrade pip
 
 ---
 
-## Part 3 — Install the Package
+## Part 4 — Install the Package
 
 ### From a wheel file
 
@@ -275,7 +280,7 @@ Expected output includes `--mode`, `--enable-servers`, `--transport`, and `--por
 
 ---
 
-## Part 4 — `.env` Configuration File
+## Part 5 — `.env` Configuration File
 
 > **How `.env` loading works:** `secure_startup()` resolves `.env` as a path **relative to the current working directory** of the process. There is no `--env-file` flag. In Topology B, each process is launched with `cd /opt/sp-mcp/<servername>` so it reads its own `.env` in that directory.
 
@@ -419,7 +424,7 @@ SP_MCP_SESSION_MAX_TTL=3600        # Hard session cap in seconds (default: 60m)
 
 ---
 
-## Part 5 — IBM SP Service Account Provisioning
+## Part 6 — IBM SP Service Account Provisioning
 
 The MCP server startup check (NET-1) validates that every configured service account has `SESSIONSECURITY=STRICT`. Create accounts on the IBM SP server before first run.
 
@@ -482,7 +487,7 @@ Expected lines in output:
 
 ---
 
-## Part 6 — `dsm.sys` TLS Configuration (NET-3)
+## Part 7 — `dsm.sys` TLS Configuration (NET-3)
 
 ### Topology A — one `dsm.sys` per SP server host
 
@@ -582,7 +587,7 @@ sed -i 's/SP_MCP_USE_PASSWORD_STASH=0/SP_MCP_USE_PASSWORD_STASH=1/' /opt/sp-mcp/
 
 ---
 
-## Part 7 — sudoers Rule for Offline Commands (Topology A only)
+## Part 8 — sudoers Rule for Offline Commands (Topology A only)
 
 > **Topology B:** Skip this part. The offline `dsmserv` and `servermon` tools require the SP server binaries to be present locally — they are not available in the centralised topology.
 
@@ -602,7 +607,7 @@ Replace `tsminst1` with the actual SP instance OS username and adjust binary pat
 
 ---
 
-## Part 8 — Verify the Installation
+## Part 9 — Verify the Installation
 
 ### Topology A — on each SP server host
 
